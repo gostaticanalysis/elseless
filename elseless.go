@@ -7,9 +7,9 @@ import (
 	"go/format"
 	"go/printer"
 	"go/token"
+	"go/types"
 
-	"github.com/gostaticanalysis/comment"
-	"github.com/gostaticanalysis/comment/passes/commentmap"
+	"github.com/gostaticanalysis/analysisutil"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
@@ -23,7 +23,6 @@ var Analyzer = &analysis.Analyzer{
 	Run:  run,
 	Requires: []*analysis.Analyzer{
 		inspect.Analyzer,
-		commentmap.Analyzer,
 	},
 }
 
@@ -52,6 +51,22 @@ func run(pass *analysis.Pass) (interface{}, error) {
 					err = report(pass, ifstmt)
 					return
 				}
+			case *ast.ExprStmt:
+				call, _ := stmt.X.(*ast.CallExpr)
+				if call == nil {
+					continue
+				}
+
+				id, _ := call.Fun.(*ast.Ident)
+				if id == nil || id.Name != "panic" {
+					continue
+				}
+
+				_, isPanic := pass.TypesInfo.ObjectOf(id).(*types.Builtin)
+				if isPanic {
+					err = report(pass, ifstmt)
+					return
+				}
 			}
 		}
 	})
@@ -64,19 +79,20 @@ func run(pass *analysis.Pass) (interface{}, error) {
 }
 
 func report(pass *analysis.Pass, ifstmt *ast.IfStmt) error {
-	cmaps := pass.ResultOf[commentmap.Analyzer].(comment.Maps)
+
+	file := analysisutil.File(pass, ifstmt.Pos())
+	if file == nil {
+		return nil
+	}
 
 	pos, end := ifstmt.Pos(), ifstmt.End()
 	elsestmt := ifstmt.Else
 	ifstmt.Else = nil
 
 	var buf bytes.Buffer
-	var ifnode interface{} = ifstmt
-	if comments := cmaps.Comments(ifstmt); len(comments) > 0 {
-		ifnode = &printer.CommentedNode{
-			Node:     ifstmt,
-			Comments: comments,
-		}
+	ifnode := &printer.CommentedNode{
+		Node:     ifstmt,
+		Comments: file.Comments,
 	}
 	if err := format.Node(&buf, pass.Fset, ifnode); err != nil {
 		return err
@@ -84,12 +100,9 @@ func report(pass *analysis.Pass, ifstmt *ast.IfStmt) error {
 
 	fmt.Fprint(&buf, ";")
 
-	var elsenode interface{} = elsestmt
-	if comments := cmaps.Comments(elsestmt); len(comments) > 0 {
-		elsenode = &printer.CommentedNode{
-			Node:     elsestmt,
-			Comments: comments,
-		}
+	elsenode := &printer.CommentedNode{
+		Node:     elsestmt,
+		Comments: file.Comments,
 	}
 	if err := format.Node(&buf, pass.Fset, elsenode); err != nil {
 		return err
