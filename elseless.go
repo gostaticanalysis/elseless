@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"go/ast"
 	"go/format"
+	"go/printer"
 	"go/token"
 
+	"github.com/gostaticanalysis/comment"
+	"github.com/gostaticanalysis/comment/passes/commentmap"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
@@ -20,6 +23,7 @@ var Analyzer = &analysis.Analyzer{
 	Run:  run,
 	Requires: []*analysis.Analyzer{
 		inspect.Analyzer,
+		commentmap.Analyzer,
 	},
 }
 
@@ -60,17 +64,34 @@ func run(pass *analysis.Pass) (interface{}, error) {
 }
 
 func report(pass *analysis.Pass, ifstmt *ast.IfStmt) error {
+	cmaps := pass.ResultOf[commentmap.Analyzer].(comment.Maps)
 
 	pos, end := ifstmt.Pos(), ifstmt.End()
 	elsestmt := ifstmt.Else
 	ifstmt.Else = nil
 
 	var buf bytes.Buffer
-	if err := format.Node(&buf, pass.Fset, ifstmt); err != nil {
+	var ifnode interface{} = ifstmt
+	if comments := cmaps.Comments(ifstmt); len(comments) > 0 {
+		ifnode = &printer.CommentedNode{
+			Node:     ifstmt,
+			Comments: comments,
+		}
+	}
+	if err := format.Node(&buf, pass.Fset, ifnode); err != nil {
 		return err
 	}
+
 	fmt.Fprint(&buf, ";")
-	if err := format.Node(&buf, pass.Fset, elsestmt); err != nil {
+
+	var elsenode interface{} = elsestmt
+	if comments := cmaps.Comments(elsestmt); len(comments) > 0 {
+		elsenode = &printer.CommentedNode{
+			Node:     elsestmt,
+			Comments: comments,
+		}
+	}
+	if err := format.Node(&buf, pass.Fset, elsenode); err != nil {
 		return err
 	}
 
